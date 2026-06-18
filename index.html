@@ -221,22 +221,27 @@ input:focus{border-color:var(--g)}
 
 <script>
 // ════════════════════════════════════════════
-// TURN SERVER
-const TURN_USER = 'openrelayproject';
-const TURN_PASS = 'openrelayproject';
-
-// ICE servers: STUN + multiple TURN providers for corporate networks
+// ICE servers: STUN + TURN for corporate/restricted networks
 const ICE_SERVERS = [
+  // STUN servers (multiple providers)
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
   // Metered TURN (reliable free tier)
   { urls: 'turn:relay1.expressturn.com:3478', username: 'efHUTNMOYTSEMPHBNN', credential: 'cUBMIYkbRm0zMrLz' },
-  // OpenRelay fallback
-  { urls: 'turn:openrelay.metered.ca:80',               username: TURN_USER, credential: TURN_PASS },
-  { urls: 'turn:openrelay.metered.ca:443',              username: TURN_USER, credential: TURN_PASS },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp',username: TURN_USER, credential: TURN_PASS },
-  { urls: 'turns:openrelay.metered.ca:443',             username: TURN_USER, credential: TURN_PASS },
+  // OpenRelay TURN - multiple ports and protocols for firewall traversal
+  { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turns:openrelay.metered.ca:443',              username: 'openrelayproject', credential: 'openrelayproject' },
+  // Metered.ca TURN
+  { urls: 'turn:a.relay.metered.ca:80',                  username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:a.relay.metered.ca:80?transport=tcp',    username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:a.relay.metered.ca:443',                 username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turns:a.relay.metered.ca:443',                username: 'openrelayproject', credential: 'openrelayproject' },
 ];
 // ════════════════════════════════════════════
 
@@ -635,16 +640,51 @@ function winnerHTML() {
 }
 
 // ── PEER SETUP ─────────────────────────────────
-function initPeer(id) {
+// Multiple PeerJS signaling servers to try in order
+const PEER_SERVERS = [
+  // Primary: PeerJS cloud
+  { host: '0.peerjs.com', port: 443, path: '/', secure: true },
+  // Fallback 1: peerjs.com alternative endpoint
+  { host: 'peerjs.com', port: 443, path: '/myapp', secure: true },
+  // Fallback 2: no custom host (uses default PeerJS)
+  null
+];
+
+function initPeerWithServer(id, serverConfig) {
   return new Promise((resolve, reject) => {
-    const p = new Peer(id, {
-      debug: 0,
-      config: { iceServers: ICE_SERVERS }
+    let opts = { debug: 0, config: { iceServers: ICE_SERVERS } };
+    if (serverConfig) {
+      opts = { ...opts, ...serverConfig };
+    }
+    const p = new Peer(id, opts);
+    let settled = false;
+    p.on('open', peerId => {
+      if (settled) return; settled = true;
+      peerReady = true; myPeerId = peerId; resolve(p);
     });
-    p.on('open', id => { peerReady=true; myPeerId=id; resolve(p); });
-    p.on('error', e => reject(e));
-    setTimeout(()=>reject(new Error('timeout')), 15000);
+    p.on('error', e => {
+      if (settled) return; settled = true;
+      try { p.destroy(); } catch(_) {}
+      reject(e);
+    });
+    setTimeout(() => {
+      if (settled) return; settled = true;
+      try { p.destroy(); } catch(_) {}
+      reject(new Error('timeout'));
+    }, 10000);
   });
+}
+
+async function initPeer(id) {
+  let lastErr;
+  for (const srv of PEER_SERVERS) {
+    try {
+      return await initPeerWithServer(id, srv);
+    } catch(e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 
 // Host: broadcast state to all guests
